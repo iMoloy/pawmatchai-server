@@ -4,6 +4,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import Pet from './models/Pet';
+import ChatSession from './models/ChatSession';
 import { seedDatabase } from './seed';
 
 // Load environment variables
@@ -260,6 +261,116 @@ app.get('/api/auth/google/callback-placeholder', (req: Request, res: Response) =
     message: 'Google OAuth login flow placeholder. Set up Passport.js or Better Auth config here.',
     clientId: process.env.GOOGLE_CLIENT_ID ? 'Configured' : 'Missing GOOGLE_CLIENT_ID env'
   });
+});
+
+// ==========================================
+// AI CHAT ASSISTANT (Mock SSE Implementation)
+// ==========================================
+
+// GET /api/ai/chat/:sessionId - Fetch chat history
+app.get('/api/ai/chat/:sessionId', async (req: Request, res: Response) => {
+  try {
+    const { sessionId } = req.params;
+    let session = await ChatSession.findOne({ sessionId });
+    
+    if (!session) {
+      // Return empty messages instead of 404 to gracefully handle new users
+      return res.json({ success: true, messages: [] });
+    }
+    
+    res.json({ success: true, messages: session.messages });
+  } catch (error) {
+    console.error('Error fetching chat session:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch chat history' });
+  }
+});
+
+// POST /api/ai/chat - Stream AI Response (SSE)
+app.post('/api/ai/chat', async (req: Request, res: Response) => {
+  const { sessionId, message, contextPetId } = req.body;
+  
+  if (!sessionId || !message) {
+    return res.status(400).json({ success: false, message: 'sessionId and message are required' });
+  }
+
+  try {
+    // 1. Fetch or create the chat session
+    let session = await ChatSession.findOne({ sessionId });
+    if (!session) {
+      session = new ChatSession({ sessionId, messages: [] });
+    }
+    
+    // Save user message to DB
+    session.messages.push({ role: 'user', content: message, timestamp: new Date() });
+    await session.save();
+
+    // 2. Setup Server-Sent Events (SSE) headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    
+    // Send initial connection establish event
+    res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
+
+    // 3. Generate a mock intelligent response based on input
+    let aiResponse = "I'm Paws, your adoption assistant! I'd love to help you find the perfect companion.";
+    
+    const lowerMsg = message.toLowerCase();
+    if (contextPetId || lowerMsg.includes('this pet')) {
+      // If we have pet context, mock a specific response
+      aiResponse = "That's a wonderful choice! This pet has a great personality and is very friendly. They require moderate exercise and love being around people. Would you like to know about their adoption fee or the adoption process?";
+    } else if (lowerMsg.includes('adopt') || lowerMsg.includes('process')) {
+      aiResponse = "The adoption process is simple! First, you fill out an application. Then, we schedule a meet-and-greet to ensure you're a perfect match. Finally, there's a small adoption fee that covers their initial medical care and microchip.";
+    } else if (lowerMsg.includes('hello') || lowerMsg.includes('hi')) {
+      aiResponse = "Hello there! I'm Paws. Are you looking for a dog, a cat, or do you have any specific questions about our adoption process?";
+    } else if (lowerMsg.includes('fee') || lowerMsg.includes('cost')) {
+      aiResponse = "Adoption fees typically range from $50 to $250 depending on the animal's age, species, and medical history. This fee includes spay/neuter surgery, up-to-date vaccinations, and a microchip!";
+    } else {
+      aiResponse = `That's an interesting question about "${message}". As an AI assistant for PawMatch, I can help you find pets, explain the adoption process, or give you details on specific animals!`;
+    }
+
+    // 4. Stream the response word by word to simulate an LLM generating text
+    const words = aiResponse.split(' ');
+    let streamedContent = "";
+    
+    for (let i = 0; i < words.length; i++) {
+      // Wait between 30ms and 150ms to simulate typing variation
+      const delay = Math.floor(Math.random() * 120) + 30;
+      await new Promise(resolve => setTimeout(resolve, delay));
+      
+      const chunk = words[i] + (i === words.length - 1 ? "" : " ");
+      streamedContent += chunk;
+      
+      // Write SSE chunk
+      res.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`);
+    }
+
+    // 5. Send suggestions at the end
+    const suggestions = [
+      "What is the adoption process?",
+      "How much does it cost?",
+      "Can I volunteer?"
+    ];
+    res.write(`data: ${JSON.stringify({ type: 'suggestions', suggestions })}\n\n`);
+    
+    // 6. Signal completion
+    res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+    res.end();
+    
+    // 7. Save AI response to DB
+    session.messages.push({ role: 'assistant', content: streamedContent, timestamp: new Date() });
+    await session.save();
+    
+  } catch (error) {
+    console.error('SSE Chat Error:', error);
+    // If headers haven't been sent, we can return 500, else we just end the stream with an error event
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, message: 'Chat Engine failed' });
+    } else {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: 'Internal Server Error' })}\n\n`);
+      res.end();
+    }
+  }
 });
 
 // Connect to MongoDB & Start Server
