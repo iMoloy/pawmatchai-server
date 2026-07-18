@@ -3,15 +3,19 @@ import mongoose from 'mongoose';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
+import { OAuth2Client } from 'google-auth-library';
 import Pet from './models/Pet';
+import User from './models/User';
 import ChatSession from './models/ChatSession';
 import { seedDatabase } from './seed';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // Load environment variables
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/pawmatchai';
 const JWT_SECRET = process.env.JWT_SECRET || 'your_fallback_secret_key';
 
@@ -190,46 +194,62 @@ app.get('/api/pets/:id', async (req: Request, res: Response) => {
 app.post('/api/ai/recommend', async (req: Request, res: Response) => {
   try {
     const { answers } = req.body;
-    
-    // 1. Fetch all pets (in a real app, we'd pre-filter here)
     const allPets = await Pet.find();
     
-    // 2. Rule-based pre-filtering based on answers
+    // Pre-filtering
     let filtered = [...allPets];
     if (answers.livingSpace === 'Apartment') {
-      // Don't recommend large dogs for apartments
       filtered = filtered.filter(p => p.size !== 'large');
     }
-    
-    // 3. Mock LLM delay to simulate API call (1.5 seconds)
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
-    // 4. Mock AI Scoring & Blurb Generation
-    // We'll just shuffle them pseudo-randomly and append an AI reason
-    const rankedMatches = filtered
-      .sort(() => 0.5 - Math.random()) // Random shuffle for demo
-      .slice(0, 6) // Return top 6
-      .map((pet, index) => {
-        const petObj = pet.toObject();
-        // Generate contextual blurb
-        let reason = "This pet looks like a great match for your household!";
-        if (answers.activityLevel === 'High' && pet.species === 'Dog') {
-          reason = `Perfect for your active lifestyle! ${pet.name} will love going on runs with you.`;
-        } else if (answers.livingSpace === 'Apartment' && pet.size === 'small') {
-          reason = `As a small ${pet.species.toLowerCase()}, ${pet.name} is the ideal size for apartment living.`;
-        } else if (answers.familyPets === 'Kids') {
-          reason = `${pet.name} has a gentle temperament that is wonderful around children.`;
-        }
-        
-        return {
-          ...petObj,
-          id: petObj.id || petObj._id.toString(), // Ensure ID is mapped correctly for frontend
-          aiScore: 99 - (index * 5), // Fake score decreasing
-          aiReason: reason
-        };
-      });
 
-    res.json({ success: true, matches: rankedMatches });
+    if (!genAI) {
+      // Fallback to basic random if no API key
+      return res.json({ 
+        success: true, 
+        matches: filtered.slice(0, 6).map(p => ({
+          ...p.toObject(), id: p._id.toString(), aiScore: 85, aiReason: "Fallback: AI Key missing."
+        }))
+      });
+    }
+
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    
+    // Prepare prompt
+    const prompt = `
+    You are an expert pet adoption counselor. A user just completed a questionnaire with these answers:
+    ${JSON.stringify(answers)}
+
+    Here is a list of available pets (ID, Name, Species, Breed, Age, Traits):
+    ${filtered.map(p => `ID: ${p._id}, Name: ${p.name}, Species: ${p.species}, Breed: ${p.breed}, Size: ${p.size}, Traits: ${p.temperament.join(', ')}`).join('\n')}
+
+    Please rank the top 6 pets that best match the user's answers.
+    For each pet, provide:
+    1. id (the exact ID string)
+    2. aiScore (a number between 70 and 99 indicating match quality)
+    3. aiReason (a short, warm 1-2 sentence explanation of why this pet is a great match based on their specific answers)
+
+    Return ONLY a valid JSON array of objects with the keys "id", "aiScore", and "aiReason".
+    `;
+
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
+    // Parse JSON out of markdown block if present
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    const parsedRankings = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+
+    // Merge rankings with full pet data
+    const rankedMatches = parsedRankings.map((ranking: any) => {
+      const pet = filtered.find(p => p._id.toString() === ranking.id);
+      if (!pet) return null;
+      return {
+        ...pet.toObject(),
+        id: pet._id.toString(),
+        aiScore: ranking.aiScore,
+        aiReason: ranking.aiReason
+      };
+    }).filter(Boolean);
+
+    res.json({ success: true, matches: rankedMatches.length > 0 ? rankedMatches : filtered.slice(0, 6) });
   } catch (error) {
     console.error('Error generating AI recommendations:', error);
     res.status(500).json({ success: false, message: 'AI Engine failed' });
@@ -259,12 +279,73 @@ app.post('/api/ai/feedback', async (req: Request, res: Response) => {
   }
 });
 
-// Placeholder for Google OAuth setup info
-app.get('/api/auth/google/callback-placeholder', (req: Request, res: Response) => {
-  res.json({
-    message: 'Google OAuth login flow placeholder. Set up Passport.js or Better Auth config here.',
-    clientId: process.env.GOOGLE_CLIENT_ID ? 'Configured' : 'Missing GOOGLE_CLIENT_ID env'
-  });
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+// POST /api/auth/google
+app.post('/api/auth/google', async (req: Request, res: Response) => {
+  try {
+    const { accessToken } = req.body;
+    if (!accessToken) {
+      return res.status(400).json({ success: false, message: 'Google access token missing' });
+    }
+
+    // Fetch user profile from Google using the access token
+    const googleResponse = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+
+    if (!googleResponse.ok) {
+      return res.status(400).json({ success: false, message: 'Failed to fetch user profile from Google' });
+    }
+
+    const payload = await googleResponse.json();
+    const { sub: googleId, email, name, picture: avatar } = payload;
+
+    if (!email) {
+      return res.status(400).json({ success: false, message: 'Email missing from Google payload' });
+    }
+
+    // Find or create user
+    let user = await User.findOne({ email });
+    if (!user) {
+      user = new User({
+        email,
+        name: name || 'User',
+        googleId,
+        avatar,
+        role: 'user'
+      });
+      await user.save();
+    } else if (!user.googleId) {
+      // Link Google ID if user exists but hasn't linked Google yet
+      user.googleId = googleId;
+      user.avatar = user.avatar || avatar;
+      await user.save();
+    }
+
+    // Generate JWT
+    const token = jwt.sign(
+      { id: user._id, email: user.email, role: user.role },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    res.json({
+      success: true,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        avatar: user.avatar,
+        role: user.role,
+        token
+      }
+    });
+
+  } catch (error) {
+    console.error('Error verifying Google auth:', error);
+    res.status(500).json({ success: false, message: 'Google Auth failed' });
+  }
 });
 
 // ==========================================
@@ -325,37 +406,48 @@ app.post('/api/ai/chat', async (req: Request, res: Response) => {
     // Send initial connection establish event
     res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
 
-    // 3. Generate a mock intelligent response based on input
-    let aiResponse = "I'm Paws, your adoption assistant! I'd love to help you find the perfect companion.";
-    
-    const lowerMsg = message.toLowerCase();
-    if (contextPetId || lowerMsg.includes('this pet')) {
-      // If we have pet context, mock a specific response
-      aiResponse = "That's a wonderful choice! This pet has a great personality and is very friendly. They require moderate exercise and love being around people. Would you like to know about their adoption fee or the adoption process?";
-    } else if (lowerMsg.includes('adopt') || lowerMsg.includes('process')) {
-      aiResponse = "The adoption process is simple! First, you fill out an application. Then, we schedule a meet-and-greet to ensure you're a perfect match. Finally, there's a small adoption fee that covers their initial medical care and microchip.";
-    } else if (lowerMsg.includes('hello') || lowerMsg.includes('hi')) {
-      aiResponse = "Hello there! I'm Paws. Are you looking for a dog, a cat, or do you have any specific questions about our adoption process?";
-    } else if (lowerMsg.includes('fee') || lowerMsg.includes('cost')) {
-      aiResponse = "Adoption fees typically range from $50 to $250 depending on the animal's age, species, and medical history. This fee includes spay/neuter surgery, up-to-date vaccinations, and a microchip!";
-    } else {
-      aiResponse = `That's an interesting question about "${message}". As an AI assistant for PawMatch, I can help you find pets, explain the adoption process, or give you details on specific animals!`;
-    }
-
-    // 4. Stream the response word by word to simulate an LLM generating text
-    const words = aiResponse.split(' ');
+    // 3. Generate response using Gemini
     let streamedContent = "";
-    
-    for (let i = 0; i < words.length; i++) {
-      // Wait between 30ms and 150ms to simulate typing variation
-      const delay = Math.floor(Math.random() * 120) + 30;
-      await new Promise(resolve => setTimeout(resolve, delay));
-      
-      const chunk = words[i] + (i === words.length - 1 ? "" : " ");
-      streamedContent += chunk;
-      
-      // Write SSE chunk
+    if (!genAI) {
+      // Fallback
+      const chunk = "Fallback: Gemini API Key is missing. Please configure GEMINI_API_KEY.";
+      streamedContent = chunk;
       res.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`);
+    } else {
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      
+      let systemInstruction = "You are Paws, a friendly AI adoption assistant for PawMatch AI. Keep answers short, warm, and helpful.";
+      if (contextPetId) {
+        try {
+          const contextPet = await Pet.findById(contextPetId);
+          if (contextPet) {
+            systemInstruction += `\nContext: The user is asking about a pet named ${contextPet.name}, a ${contextPet.breed} ${contextPet.species}. Traits: ${contextPet.temperament.join(', ')}. Fee: $${contextPet.fee}.`;
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      // Convert history to Gemini format
+      const history = session?.messages.slice(0, -1).map((m: any) => ({
+        role: m.role === 'ai' ? 'model' : 'user',
+        parts: [{ text: m.content }]
+      })) || [];
+
+      const chat = model.startChat({
+        history: [
+          { role: 'user', parts: [{ text: systemInstruction }] },
+          { role: 'model', parts: [{ text: "Understood. I am Paws, ready to help." }] },
+          ...history
+        ]
+      });
+
+      const resultStream = await chat.sendMessageStream(message);
+      for await (const chunk of resultStream.stream) {
+        const text = chunk.text();
+        streamedContent += text;
+        res.write(`data: ${JSON.stringify({ type: 'chunk', content: text })}\n\n`);
+      }
     }
 
     // 5. Send suggestions at the end
