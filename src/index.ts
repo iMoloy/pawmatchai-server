@@ -86,7 +86,7 @@ app.get('/api/pets', async (req: Request, res: Response) => {
     // 4. Age range filter (done in-memory for simpler string match regex handling)
     if (ageRange) {
       const range = ageRange.toString();
-      petsList = petsList.filter(pet => {
+      petsList = petsList.filter((pet: any) => {
         const ageStr = pet.age.toLowerCase();
         const val = parseInt(ageStr);
         if (isNaN(val)) {
@@ -105,13 +105,13 @@ app.get('/api/pets', async (req: Request, res: Response) => {
 
     // 5. Location filter (Mock "nearby" check)
     if (location === 'nearby') {
-      petsList = petsList.filter(pet => pet.location.includes('Austin') || pet.location.includes('Seattle'));
+      petsList = petsList.filter((pet: any) => pet.location.includes('Austin') || pet.location.includes('Seattle'));
     }
 
     // 6. Sorting
     if (sort) {
       const sortType = sort.toString();
-      petsList.sort((a, b) => {
+      petsList.sort((a: any, b: any) => {
         if (sortType === 'newest') {
           return b.id - a.id;
         }
@@ -174,6 +174,83 @@ app.get('/api/pets/:id', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching pet details:', error);
     res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// ==========================================
+// AI RECOMMENDATION ENGINE (Mock implementation)
+// ==========================================
+
+// POST /api/ai/recommend - Process quiz and return ranked matches
+app.post('/api/ai/recommend', async (req: Request, res: Response) => {
+  try {
+    const { answers } = req.body;
+    
+    // 1. Fetch all pets (in a real app, we'd pre-filter here)
+    const allPets = await Pet.find();
+    
+    // 2. Rule-based pre-filtering based on answers
+    let filtered = [...allPets];
+    if (answers.livingSpace === 'Apartment') {
+      // Don't recommend extra large dogs for apartments
+      filtered = filtered.filter(p => p.size !== 'Extra Large');
+    }
+    
+    // 3. Mock LLM delay to simulate API call (1.5 seconds)
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    
+    // 4. Mock AI Scoring & Blurb Generation
+    // We'll just shuffle them pseudo-randomly and append an AI reason
+    const rankedMatches = filtered
+      .sort(() => 0.5 - Math.random()) // Random shuffle for demo
+      .slice(0, 6) // Return top 6
+      .map((pet, index) => {
+        const petObj = pet.toObject();
+        // Generate contextual blurb
+        let reason = "This pet looks like a great match for your household!";
+        if (answers.activityLevel === 'High' && pet.species === 'Dog') {
+          reason = `Perfect for your active lifestyle! ${pet.name} will love going on runs with you.`;
+        } else if (answers.livingSpace === 'Apartment' && pet.size === 'Small') {
+          reason = `As a small ${pet.species.toLowerCase()}, ${pet.name} is the ideal size for apartment living.`;
+        } else if (answers.familyPets === 'Kids') {
+          reason = `${pet.name} has a gentle temperament that is wonderful around children.`;
+        }
+        
+        return {
+          ...petObj,
+          id: petObj.id || petObj._id.toString(), // Ensure ID is mapped correctly for frontend
+          aiScore: 99 - (index * 5), // Fake score decreasing
+          aiReason: reason
+        };
+      });
+
+    res.json({ success: true, matches: rankedMatches });
+  } catch (error) {
+    console.error('Error generating AI recommendations:', error);
+    res.status(500).json({ success: false, message: 'AI Engine failed' });
+  }
+});
+
+// POST /api/ai/feedback - Re-rank based on like/dislike
+app.post('/api/ai/feedback', async (req: Request, res: Response) => {
+  try {
+    const { petId, feedback, currentResults } = req.body;
+    
+    // In a real app, we'd store the feedback in the DB and call the LLM to re-evaluate.
+    // Here we'll just mock a quick re-sort of the remaining items.
+    
+    // Remove the disliked pet
+    let updatedResults = currentResults.filter((p: any) => p.id !== petId && p._id !== petId);
+    
+    if (feedback === 'like') {
+      // If they liked it, maybe find similar pets and bump them up (mocked by shuffle)
+      updatedResults = updatedResults.sort(() => 0.5 - Math.random());
+    }
+
+    res.json({ success: true, reRankedMatches: updatedResults });
+  } catch (error) {
+    console.error('Error processing AI feedback:', error);
+    res.status(500).json({ success: false, message: 'Feedback processing failed' });
   }
 });
 
