@@ -16,7 +16,11 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/pawmatchai
 const JWT_SECRET = process.env.JWT_SECRET || 'your_fallback_secret_key';
 
 // Middlewares
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
+  credentials: true,
+  exposedHeaders: ['Content-Type', 'Cache-Control', 'Connection'],
+}));
 app.use(express.json());
 
 // Basic health check route
@@ -193,8 +197,8 @@ app.post('/api/ai/recommend', async (req: Request, res: Response) => {
     // 2. Rule-based pre-filtering based on answers
     let filtered = [...allPets];
     if (answers.livingSpace === 'Apartment') {
-      // Don't recommend extra large dogs for apartments
-      filtered = filtered.filter(p => p.size !== 'Extra Large');
+      // Don't recommend large dogs for apartments
+      filtered = filtered.filter(p => p.size !== 'large');
     }
     
     // 3. Mock LLM delay to simulate API call (1.5 seconds)
@@ -211,7 +215,7 @@ app.post('/api/ai/recommend', async (req: Request, res: Response) => {
         let reason = "This pet looks like a great match for your household!";
         if (answers.activityLevel === 'High' && pet.species === 'Dog') {
           reason = `Perfect for your active lifestyle! ${pet.name} will love going on runs with you.`;
-        } else if (answers.livingSpace === 'Apartment' && pet.size === 'Small') {
+        } else if (answers.livingSpace === 'Apartment' && pet.size === 'small') {
           reason = `As a small ${pet.species.toLowerCase()}, ${pet.name} is the ideal size for apartment living.`;
         } else if (answers.familyPets === 'Kids') {
           reason = `${pet.name} has a gentle temperament that is wonderful around children.`;
@@ -267,17 +271,20 @@ app.get('/api/auth/google/callback-placeholder', (req: Request, res: Response) =
 // AI CHAT ASSISTANT (Mock SSE Implementation)
 // ==========================================
 
+// Helper: check if MongoDB is connected before using Mongoose
+const isDbConnected = () => mongoose.connection.readyState === 1;
+
 // GET /api/ai/chat/:sessionId - Fetch chat history
 app.get('/api/ai/chat/:sessionId', async (req: Request, res: Response) => {
   try {
+    if (!isDbConnected()) {
+      return res.json({ success: true, messages: [] }); // Gracefully return empty if no DB
+    }
     const { sessionId } = req.params;
-    let session = await ChatSession.findOne({ sessionId });
-    
+    const session = await ChatSession.findOne({ sessionId });
     if (!session) {
-      // Return empty messages instead of 404 to gracefully handle new users
       return res.json({ success: true, messages: [] });
     }
-    
     res.json({ success: true, messages: session.messages });
   } catch (error) {
     console.error('Error fetching chat session:', error);
@@ -294,20 +301,26 @@ app.post('/api/ai/chat', async (req: Request, res: Response) => {
   }
 
   try {
-    // 1. Fetch or create the chat session
-    let session = await ChatSession.findOne({ sessionId });
-    if (!session) {
-      session = new ChatSession({ sessionId, messages: [] });
+    // 1. Fetch or create the chat session (only if DB is available)
+    let session: any = null;
+    if (isDbConnected()) {
+      try {
+        session = await ChatSession.findOne({ sessionId });
+        if (!session) session = new ChatSession({ sessionId, messages: [] });
+        session.messages.push({ role: 'user', content: message, timestamp: new Date() });
+        await session.save();
+      } catch (dbErr) {
+        console.warn('DB write skipped (no connection):', (dbErr as Error).message);
+        session = null;
+      }
     }
-    
-    // Save user message to DB
-    session.messages.push({ role: 'user', content: message, timestamp: new Date() });
-    await session.save();
 
     // 2. Setup Server-Sent Events (SSE) headers
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+    res.flushHeaders(); // Flush headers immediately so the client can begin reading
     
     // Send initial connection establish event
     res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
@@ -357,9 +370,15 @@ app.post('/api/ai/chat', async (req: Request, res: Response) => {
     res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
     res.end();
     
-    // 7. Save AI response to DB
-    session.messages.push({ role: 'assistant', content: streamedContent, timestamp: new Date() });
-    await session.save();
+    // 7. Save AI response to DB (only if session exists)
+    if (isDbConnected() && session) {
+      try {
+        session.messages.push({ role: 'assistant', content: streamedContent, timestamp: new Date() });
+        await session.save();
+      } catch (dbErr) {
+        console.warn('DB save skipped (no connection):', (dbErr as Error).message);
+      }
+    }
     
   } catch (error) {
     console.error('SSE Chat Error:', error);
