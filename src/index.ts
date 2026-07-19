@@ -19,16 +19,26 @@ const genAI = process.env.GEMINI_API_KEY
   ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
   : null;
 const MONGO_URI =
-  process.env.MONGO_URI || "mongodb://localhost:27017/pawmatchai";
+  process.env.MONGO_URI ||
+  process.env.MONGODB_URI ||
+  "mongodb://localhost:27017/pawmatchai";
 const JWT_SECRET = process.env.JWT_SECRET || "your_fallback_secret_key";
 
 // Helper: check if MongoDB is connected before using Mongoose
 const isDbConnected = () => mongoose.connection.readyState === 1;
 
 // Middlewares
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "https://pawmatchai.vercel.app",
+  "https://www.pawmatchai.vercel.app",
+  process.env.CLIENT_URL,
+].filter(Boolean) as string[];
+
 app.use(
   cors({
-    origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
+    origin: allowedOrigins,
     credentials: true,
     exposedHeaders: ["Content-Type", "Cache-Control", "Connection"],
   }),
@@ -355,12 +365,10 @@ app.post("/api/auth/google", async (req: Request, res: Response) => {
     );
 
     if (!googleResponse.ok) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Failed to fetch user profile from Google",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Failed to fetch user profile from Google",
+      });
     }
 
     const payload = await googleResponse.json();
