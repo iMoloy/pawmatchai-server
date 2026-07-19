@@ -410,7 +410,7 @@ app.post("/api/ai/recommend", async (req: Request, res: Response) => {
       });
     }
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash" });
 
     // Prepare prompt
     const prompt = `
@@ -726,7 +726,7 @@ app.post("/api/ai/chat", async (req: Request, res: Response) => {
         `data: ${JSON.stringify({ type: "chunk", content: chunk })}\n\n`,
       );
     } else {
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash" });
 
       let systemInstruction =
         "You are Paws, a friendly AI adoption assistant for PawMatch AI. Keep answers short, warm, and helpful.";
