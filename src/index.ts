@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import cors from "cors";
 import dotenv from "dotenv";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
 import { OAuth2Client } from "google-auth-library";
 import Pet from "./models/Pet";
 import User from "./models/User";
@@ -486,6 +487,91 @@ app.post("/api/ai/feedback", async (req: Request, res: Response) => {
 });
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+// POST /api/auth/register
+app.post("/api/auth/register", async (req: Request, res: Response) => {
+  try {
+    const { name, email, password } = req.body;
+    if (!name || !email || !password) {
+      return res.status(400).json({ success: false, message: "Missing required fields" });
+    }
+    if (password.length < 8) {
+      return res.status(400).json({ success: false, message: "Password must be at least 8 characters" });
+    }
+
+    let user = await User.findOne({ email });
+    if (user) {
+      return res.status(400).json({ success: false, message: "Email is already registered" });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    user = new User({
+      name,
+      email,
+      password: hashedPassword,
+      role: "user"
+    });
+    await user.save();
+
+    const token = jwt.sign({ id: user._id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: "7d" });
+
+    res.status(201).json({
+      success: true,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        avatar: user.avatar,
+        role: user.role,
+        token
+      }
+    });
+  } catch (error) {
+    console.error("Error registering user:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// POST /api/auth/login
+app.post("/api/auth/login", async (req: Request, res: Response) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ success: false, message: "Missing required fields" });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(401).json({ success: false, message: "Invalid email or password" });
+    }
+
+    if (!user.password) {
+      return res.status(400).json({ success: false, message: "This account was created with Google. Please use Google Sign-In." });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ success: false, message: "Invalid email or password" });
+    }
+
+    const token = jwt.sign({ id: user._id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: "7d" });
+
+    res.json({
+      success: true,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        avatar: user.avatar,
+        role: user.role,
+        token
+      }
+    });
+  } catch (error) {
+    console.error("Error logging in user:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
 
 // POST /api/auth/google
 app.post("/api/auth/google", async (req: Request, res: Response) => {

@@ -1,4 +1,6 @@
 import Pet from './models/Pet';
+import User from './models/User';
+import bcrypt from 'bcryptjs';
 
 const placeholderPetsToSeed = [
   {
@@ -192,7 +194,38 @@ export const seedDatabase = async () => {
     } else {
       console.log(`Database already has ${count} records. Skipping seeding.`);
     }
+
+    const demoUser = await User.findOne({ email: 'demo@pawmatch.ai' });
+    if (!demoUser) {
+      console.log('Seeding demo user...');
+      const hashedPassword = await bcrypt.hash('pawmatch2026', 10);
+      await User.create({
+        name: 'Demo User',
+        email: 'demo@pawmatch.ai',
+        password: hashedPassword,
+        role: 'user'
+      });
+      console.log('Demo user seeded successfully!');
+    }
   } catch (error) {
     console.error('Failed to seed database:', error);
+  }
+
+  // Seed a demo account so the "Try Demo Account" button on the login page works
+  try {
+    const demoEmail = 'demo@pawmatch.ai';
+    const existingDemoUser = await User.findOne({ email: demoEmail });
+    if (!existingDemoUser) {
+      const hashedPassword = await bcrypt.hash('pawmatch2026', 10);
+      await User.create({
+        name: 'Demo User',
+        email: demoEmail,
+        password: hashedPassword,
+        role: 'user',
+      });
+      console.log('Demo account seeded (demo@pawmatch.ai).');
+    }
+  } catch (error) {
+    console.error('Failed to seed demo user:', error);
   }
 };

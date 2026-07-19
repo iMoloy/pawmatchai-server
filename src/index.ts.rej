@@ -1,0 +1,144 @@
+diff a/src/index.ts b/src/index.ts	(rejected hunks)
+@@ -3,6 +3,7 @@ import mongoose from "mongoose";
+ import cors from "cors";
+ import dotenv from "dotenv";
+ import jwt from "jsonwebtoken";
++import bcrypt from "bcryptjs";
+ import { OAuth2Client } from "google-auth-library";
+ import Pet from "./models/Pet";
+ import User from "./models/User";
+@@ -485,6 +486,134 @@ app.post("/api/ai/feedback", async (req: Request, res: Response) => {
+   }
+ });
+ 
++// ==========================================
++// EMAIL / PASSWORD AUTHENTICATION
++// ==========================================
++
++// POST /api/auth/register
++app.post("/api/auth/register", async (req: Request, res: Response) => {
++  try {
++    if (!isDbConnected()) {
++      return res
++        .status(503)
++        .json({ success: false, message: "Database unavailable" });
++    }
++
++    const { name, email, password } = req.body;
++
++    if (!name || !email || !password) {
++      return res.status(400).json({
++        success: false,
++        message: "Name, email and password are required",
++      });
++    }
++
++    if (password.length < 6) {
++      return res.status(400).json({
++        success: false,
++        message: "Password must be at least 6 characters long",
++      });
++    }
++
++    const existingUser = await User.findOne({ email: email.toLowerCase() });
++    if (existingUser) {
++      return res
++        .status(409)
++        .json({ success: false, message: "An account with this email already exists" });
++    }
++
++    const hashedPassword = await bcrypt.hash(password, 10);
++
++    const user = new User({
++      name,
++      email: email.toLowerCase(),
++      password: hashedPassword,
++      role: "user",
++    });
++    await user.save();
++
++    const token = jwt.sign(
++      { id: user._id, email: user.email, role: user.role },
++      JWT_SECRET,
++      { expiresIn: "7d" },
++    );
++
++    res.status(201).json({
++      success: true,
++      user: {
++        id: user._id,
++        email: user.email,
++        name: user.name,
++        avatar: user.avatar,
++        role: user.role,
++        token,
++      },
++    });
++  } catch (error: any) {
++    console.error("Error registering user:", error);
++    if (error?.code === 11000) {
++      return res
++        .status(409)
++        .json({ success: false, message: "An account with this email already exists" });
++    }
++    res.status(500).json({ success: false, message: "Internal server error" });
++  }
++});
++
++// POST /api/auth/login
++app.post("/api/auth/login", async (req: Request, res: Response) => {
++  try {
++    if (!isDbConnected()) {
++      return res
++        .status(503)
++        .json({ success: false, message: "Database unavailable" });
++    }
++
++    const { email, password } = req.body;
++
++    if (!email || !password) {
++      return res
++        .status(400)
++        .json({ success: false, message: "Email and password are required" });
++    }
++
++    const user = await User.findOne({ email: email.toLowerCase() });
++    if (!user || !user.password) {
++      return res
++        .status(401)
++        .json({ success: false, message: "Invalid email or password" });
++    }
++
++    const isMatch = await bcrypt.compare(password, user.password);
++    if (!isMatch) {
++      return res
++        .status(401)
++        .json({ success: false, message: "Invalid email or password" });
++    }
++
++    const token = jwt.sign(
++      { id: user._id, email: user.email, role: user.role },
++      JWT_SECRET,
++      { expiresIn: "7d" },
++    );
++
++    res.json({
++      success: true,
++      user: {
++        id: user._id,
++        email: user.email,
++        name: user.name,
++        avatar: user.avatar,
++        role: user.role,
++        token,
++      },
++    });
++  } catch (error) {
++    console.error("Error logging in user:", error);
++    res.status(500).json({ success: false, message: "Internal server error" });
++  }
++});
++
+ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+ 
+ // POST /api/auth/google

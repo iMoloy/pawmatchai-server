@@ -1,0 +1,8 @@
+diff a/src/seed.ts b/src/seed.ts	(rejected hunks)
+@@ -1,4 +1,6 @@
++import bcrypt from 'bcryptjs';
+ import Pet from './models/Pet';
++import User from './models/User';
+ 
+ const placeholderPetsToSeed = [
+   {

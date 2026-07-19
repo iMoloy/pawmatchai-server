@@ -46,4 +46,4 @@ const PetSchema: Schema = new Schema({
   timestamps: true
 });
 
-export default mongoose.model<IPet>('Pet', PetSchema);
+export default mongoose.models.Pet || mongoose.model<IPet>('Pet', PetSchema);
