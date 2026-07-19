@@ -9,8 +9,8 @@ export interface IPet extends Document {
   location: string;
   fee: number;
   image: string;
-  size: 'small' | 'medium' | 'large';
-  sex: 'Male' | 'Female';
+  size: 'small' | 'medium' | 'large' | 'extra large';
+  sex: 'Male' | 'Female' | 'Unknown';
   description: string;
   vaccinated: boolean;
   neutered: boolean;
@@ -19,6 +19,7 @@ export interface IPet extends Document {
   temperament: string[];
   weight: string;
   images: string[];
+  ownerId?: string;
 }
 
 const PetSchema: Schema = new Schema({
@@ -30,8 +31,8 @@ const PetSchema: Schema = new Schema({
   location: { type: String, required: true },
   fee: { type: Number, required: true },
   image: { type: String, required: true },
-  size: { type: String, enum: ['small', 'medium', 'large'], required: true },
-  sex: { type: String, enum: ['Male', 'Female'], required: true },
+  size: { type: String, enum: ['small', 'medium', 'large', 'extra large'], required: true },
+  sex: { type: String, enum: ['Male', 'Female', 'Unknown'], default: 'Unknown' },
   description: { type: String, required: true },
   vaccinated: { type: Boolean, default: false },
   neutered: { type: Boolean, default: false },
@@ -39,7 +40,8 @@ const PetSchema: Schema = new Schema({
   goodWithPets: { type: Boolean, default: false },
   temperament: { type: [String], default: [] },
   weight: { type: String, required: true },
-  images: { type: [String], default: [] }
+  images: { type: [String], default: [] },
+  ownerId: { type: String, required: false }
 }, {
   timestamps: true
 });

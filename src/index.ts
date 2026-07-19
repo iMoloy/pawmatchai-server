@@ -239,6 +239,147 @@ app.get("/api/pets/:id", async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/pets - Create a new pet listing (protected)
+app.post(
+  "/api/pets",
+  authenticateToken,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      if (!isDbConnected()) {
+        return res
+          .status(503)
+          .json({ success: false, message: "Database unavailable" });
+      }
+
+      const {
+        name,
+        breed,
+        species,
+        age,
+        location,
+        fee,
+        image,
+        size,
+        sex,
+        description,
+        weight,
+        vaccinated,
+        neutered,
+        goodWithKids,
+        goodWithPets,
+        temperament,
+        images,
+      } = req.body;
+
+      const requiredFields: Record<string, unknown> = {
+        name,
+        breed,
+        species,
+        age,
+        location,
+        fee,
+        image,
+        size,
+        description,
+        weight,
+      };
+      const missing = Object.entries(requiredFields)
+        .filter(([, value]) => value === undefined || value === null || value === "")
+        .map(([key]) => key);
+
+      if (missing.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Missing required fields: ${missing.join(", ")}`,
+        });
+      }
+
+      // Assign the next sequential id (mirrors the seed data's numbering scheme)
+      const lastPet = await Pet.findOne().sort({ id: -1 });
+      const nextId = lastPet ? lastPet.id + 1 : 1;
+
+      const pet = new Pet({
+        id: nextId,
+        name,
+        breed,
+        species,
+        age,
+        location,
+        fee: Number(fee),
+        image,
+        size: size.toString().toLowerCase(),
+        sex: sex || "Unknown",
+        description,
+        weight,
+        vaccinated: !!vaccinated,
+        neutered: !!neutered,
+        goodWithKids: !!goodWithKids,
+        goodWithPets: !!goodWithPets,
+        temperament: Array.isArray(temperament) ? temperament : [],
+        images: Array.isArray(images) && images.length > 0 ? images : [image],
+        ownerId: req.user?.id,
+      });
+
+      await pet.save();
+      res.status(201).json({ success: true, pet });
+    } catch (error: any) {
+      console.error("Error creating pet:", error);
+      if (error?.name === "ValidationError") {
+        return res.status(400).json({ success: false, message: error.message });
+      }
+      res.status(500).json({ success: false, message: "Internal server error" });
+    }
+  },
+);
+
+// GET /api/pets/mine - List the authenticated user's own pet listings (protected)
+app.get(
+  "/api/pets/mine",
+  authenticateToken,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      if (!isDbConnected()) {
+        return res.json({ success: true, pets: [] });
+      }
+      const pets = await Pet.find({ ownerId: req.user?.id }).sort({ id: -1 });
+      res.json({ success: true, pets });
+    } catch (error) {
+      console.error("Error fetching user's pets:", error);
+      res.status(500).json({ success: false, message: "Internal server error" });
+    }
+  },
+);
+
+// DELETE /api/pets/:id - Delete a pet listing owned by the authenticated user (protected)
+app.delete(
+  "/api/pets/:id",
+  authenticateToken,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const paramId = req.params.id;
+      const query = /^\d+$/.test(paramId)
+        ? { id: parseInt(paramId) }
+        : { _id: paramId };
+
+      const pet = await Pet.findOne(query);
+      if (!pet) {
+        return res.status(404).json({ success: false, message: "Pet not found" });
+      }
+      if (pet.ownerId && pet.ownerId !== req.user?.id) {
+        return res
+          .status(403)
+          .json({ success: false, message: "Not authorized to delete this pet" });
+      }
+
+      await Pet.deleteOne(query);
+      res.json({ success: true, message: "Pet deleted" });
+    } catch (error) {
+      console.error("Error deleting pet:", error);
+      res.status(500).json({ success: false, message: "Internal server error" });
+    }
+  },
+);
+
 // ==========================================
 // AI RECOMMENDATION ENGINE (Mock implementation)
 // ==========================================
